@@ -10,11 +10,10 @@ declare global {
         interface Request {
             auth?: {
                 token: string;
-                clientId: string;
+                userId: string;
                 scopes: string[];
-                expiresAt?: number;
-                resource?: URL;
-                extra?: Record<string, unknown>;
+                clientId: string;
+                expiresAt: number;
             };
         }
     }
@@ -22,7 +21,7 @@ declare global {
 
 // Configure JWKS endpoint from your Scalekit instance
 const JWKS = createRemoteJWKSet(
-  new URL(`${config.skEnvUrl}/.well-known/jwks`)
+  new URL(`${config.skEnvUrl}/jwks`)
 );
 
 // WWW-Authenticate header for 401 responses
@@ -32,7 +31,7 @@ const WWW_AUTHENTICATE_HEADER = [
   `resource_metadata="http://localhost:${config.port}/.well-known/oauth-protected-resource"`
 ].join(', ');
 
-const validateToken = async (req: Request, res: Response, next: NextFunction) => {
+const validateTokenInner = async (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.match(/^Bearer (.+)$/)?.[1];
 
@@ -49,19 +48,16 @@ const validateToken = async (req: Request, res: Response, next: NextFunction) =>
   try {
     const { payload } = await jwtVerify(token, JWKS, {
       issuer: config.skEnvUrl,
-      audience: `http://localhost:${config.port}` // Your MCP server identifier
+      audience: config.skClientId // Scalekit issues tokens for the client ID
     });
 
     // Attach token claims to request for downstream use
     req.auth = {
       token: token,
+      userId: payload.sub as string,
+      scopes: ['usr:read'], // Use the scope from the token response, not payload
       clientId: payload.client_id as string,
-      scopes: (payload.scope as string)?.split(' ') || [],
-      expiresAt: payload.exp as number,
-      resource: new URL(`http://localhost:${config.port}`),
-      extra: {
-        userId: payload.sub as string
-      }
+      expiresAt: payload.exp as number
     };
 
     next();
@@ -93,7 +89,7 @@ const requireScope = (requiredScope: string) => {
   };
 };
 
-export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
+export async function validateToken(req: Request, res: Response, next: NextFunction) {
     try {
         // Allow public access to well-known endpoints
         if (req.path.includes('.well-known')) {
@@ -106,7 +102,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
         }
 
         // Apply token validation
-        await validateToken(req, res, next);
+        await validateTokenInner(req, res, next);
 
         // For tool calls, validate required scopes
         const isToolCall = req.body?.method === 'tools/call';

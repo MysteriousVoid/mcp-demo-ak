@@ -5,7 +5,7 @@ import fetch from 'node-fetch';
 import { config } from './config/config.js';
 import { oauthProtectedResourceHandler } from './lib/auth.js';
 import { logger } from './lib/logger.js';
-import { authMiddleware } from './lib/middleware.js';
+import { validateToken } from './lib/middleware.js';
 import { setupTransportRoutes } from './lib/transport.js';
 import { registerTools } from './tools/index.js';
 
@@ -34,7 +34,7 @@ app.get('/.well-known/oauth-authorization-server', async (req, res) => {
 });
 
 // Apply to all MCP endpoints
-app.use('/', authMiddleware);
+app.use('/', validateToken);
 
 setupTransportRoutes(app, server);
 logger.info('Transport routes set up successfully');
