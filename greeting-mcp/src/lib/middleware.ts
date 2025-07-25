@@ -1,4 +1,4 @@
-import { jwtVerify, createRemoteJWKSet } from 'jose';
+import { Scalekit, TokenValidationOptions } from '@scalekit-sdk/node';
 import { NextFunction, Request, Response } from 'express';
 import { config } from '../config/config.js';
 import { TOOLS } from '../tools/index.js';
@@ -19,77 +19,20 @@ declare global {
     }
 }
 
-// Configure JWKS endpoint from your Scalekit instance
-const JWKS = createRemoteJWKSet(
-  new URL(`${config.skEnvUrl}/jwks`)
-);
+const scalekit = new Scalekit(config.skEnvUrl, config.skClientId, config.skClientSecret);
 
-// WWW-Authenticate header for 401 responses
-const WWW_AUTHENTICATE_HEADER = [
-  'Bearer error="unauthorized"',
-  'error_description="Authorization required"',
-  `resource_metadata="http://localhost:${config.port}/.well-known/oauth-protected-resource"`
-].join(', ');
+// your resource id that you configure in the scalekit dashboard
+const RESOURCE_ID = `http://localhost:${config.port}`;
 
-const validateTokenInner = async (req: Request, res: Response, next: NextFunction) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.match(/^Bearer (.+)$/)?.[1];
+// your resource metadata endpoint that you can copy from the scalekit dashboard
+const resource_metadata_endpoint = `http://localhost:${config.port}/.well-known/oauth-protected-resource`;
 
-  if (!token) {
-    return res
-      .set('WWW-Authenticate', WWW_AUTHENTICATE_HEADER)
-      .status(401)
-      .json({
-        error: 'unauthorized',
-        error_description: 'Bearer token required'
-      });
-  }
-
-  try {
-    const { payload } = await jwtVerify(token, JWKS, {
-      issuer: config.skEnvUrl,
-      audience: config.skClientId // Scalekit issues tokens for the client ID
-    });
-
-    // Attach token claims to request for downstream use
-    req.auth = {
-      token: token,
-      userId: payload.sub as string,
-      scopes: ['usr:read'], // Use the scope from the token response, not payload
-      clientId: payload.client_id as string,
-      expiresAt: payload.exp as number
-    };
-
-    next();
-  } catch (error) {
-    console.error('Token validation failed:', error instanceof Error ? error.message : String(error));
-    return res
-      .set('WWW-Authenticate', WWW_AUTHENTICATE_HEADER)
-      .status(401)
-      .json({
-        error: 'invalid_token',
-        error_description: 'Bearer token is invalid or expired'
-      });
-  }
+export const WWWHeader = {
+    HeaderKey: 'WWW-Authenticate',
+    HeaderValue: `Bearer realm="OAuth", resource_metadata="${resource_metadata_endpoint}"`
 };
 
-const requireScope = (requiredScope: string) => {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const userScopes = req.auth?.scopes || [];
-
-    if (!userScopes.includes(requiredScope)) {
-      return res.status(403).json({
-        error: 'insufficient_scope',
-        error_description: `Required scope: ${requiredScope}`,
-        scope: requiredScope
-      });
-    }
-
-    next();
-  };
-};
-
-export async function validateToken(req: Request, res: Response, next: NextFunction) {
+export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
     try {
         // Allow public access to well-known endpoints
         if (req.path.includes('.well-known')) {
@@ -101,8 +44,25 @@ export async function validateToken(req: Request, res: Response, next: NextFunct
             return next();
         }
 
-        // Apply token validation
-        await validateTokenInner(req, res, next);
+        // Apply authentication to all MCP requests
+        const authHeader = req.headers['authorization'];
+        const token = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1]?.trim() : null;
+
+        if (!token) {
+            throw new Error('Missing or invalid Bearer token');
+        }
+
+        // Validate token using Scalekit SDK
+        const tokenInfo = await scalekit.validateToken(token, { audience: [RESOURCE_ID] }) as any;
+        
+        // Attach token claims to request for downstream use
+        req.auth = {
+            token: token,
+            userId: tokenInfo.sub || '',
+            scopes: tokenInfo.scope?.split(' ') || [],
+            clientId: tokenInfo.client_id || '',
+            expiresAt: tokenInfo.exp || 0
+        };
 
         // For tool calls, validate required scopes
         const isToolCall = req.body?.method === 'tools/call';
@@ -127,12 +87,6 @@ export async function validateToken(req: Request, res: Response, next: NextFunct
         next();
     } catch (err) {
         logger.error('Unauthorized request', { error: err instanceof Error ? err.message : String(err) });
-        return res
-            .set('WWW-Authenticate', WWW_AUTHENTICATE_HEADER)
-            .status(401)
-            .json({
-                error: 'invalid_token',
-                error_description: 'Bearer token is invalid or expired'
-            });
+        return res.status(401).set(WWWHeader.HeaderKey, WWWHeader.HeaderValue).end();
     }
 }
