@@ -1,0 +1,13 @@
+{
+  "items": [
+    [
+      {
+        "connectionType": "STREAMABLE_HTTP",
+        "name": "STREAMABLE_HTTP-1753431191249",
+        "version": "1.0",
+        "url": "http://localhost:3002/",
+        "oauth": ""
+      }
+    ]
+  ]
+}
